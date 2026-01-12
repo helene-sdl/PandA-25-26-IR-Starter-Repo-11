@@ -6,7 +6,7 @@ import os
 import urllib.request
 import urllib.error
 
-from .models import Sonnet
+from models import Sonnet
 
 POETRYDB_URL = "https://poetrydb.org/author,title/Shakespeare;Sonnet"
 

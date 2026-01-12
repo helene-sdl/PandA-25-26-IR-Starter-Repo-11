@@ -7,10 +7,10 @@ WHAT'S NEW IN PART 11. A positional Index. It's almost done, only the finishing 
 from typing import List
 import time
 
-from .constants import BANNER, HELP
-from .models import SearchResult, Searcher
+from constants import BANNER, HELP
+from models import SearchResult, Searcher
 
-from .file_utilities import load_config, load_sonnets, Configuration
+from file_utilities import load_config, load_sonnets, Configuration
 
 
 def print_results(
@@ -18,8 +18,10 @@ def print_results(
     results: List[SearchResult],
     highlight_mode: str,
     query_time_ms: float | None = None,
+    total_docs: int | None = None,
 ) -> None:
-    total_docs = len(results)
+    if total_docs is None:
+        total_docs = len(results)
     matched = [r for r in results if r.matches > 0]
 
     line = f'{len(matched)} out of {total_docs} sonnets contain "{query}".'
@@ -113,7 +115,7 @@ def main() -> None:
 
         highlight_mode = config.hl_mode if config.highlight else None
 
-        print_results(raw, results, highlight_mode, elapsed_ms)
+        print_results(raw, results, highlight_mode, elapsed_ms, total_docs=searcher.total_sonnets) # added to fix the number of sonnets in output
 
 if __name__ == "__main__":
     main()
