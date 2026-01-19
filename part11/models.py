@@ -1,6 +1,19 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Callable
 import string
+from nltk.stem import PorterStemmer
+
+stemmer = PorterStemmer()
+
+def normalize_token(token:str)->str:
+    token = token.lower()
+    token = token.replace("'", "").replace(",", "").replace(".", "")
+    return token
+
+def normalized_stem_token(token:str)->str:
+    normalized_token = normalize_token(token)
+    return stemmer.stem(normalized_token)
+
 
 class Sonnet:
     def __init__(self, sonnet_data: Dict[str, Any]):
@@ -27,15 +40,20 @@ class Sonnet:
         title_raw = str(self.title)
         lines_raw = self.lines
 
-        q = query.lower()
-        title_spans = self.find_spans(title_raw.lower(), q)
+        title_spans = []
+        for token, pos in Index.tokenize(title_raw):
+            if normalized_stem_token(token) == query:
+                title_spans.append((pos, pos + len(token)))
 
         line_matches = []
         for idx, line_raw in enumerate(lines_raw, start=1):  # 1-based line numbers
-            spans = self.find_spans(line_raw.lower(), q)
+            spans = []
+            for token, pos in Index.tokenize(line_raw):
+                if normalized_stem_token(token) == query:
+                    spans.append((pos, pos + len(token)))
+
             if spans:
                 line_matches.append(LineMatch(idx, line_raw, spans))
-
         total = len(title_spans) + sum(len(lm.spans) for lm in line_matches)
 
         return SearchResult(title_raw, title_spans, line_matches, total)
@@ -52,9 +70,10 @@ class LineMatch:
 
 
 class Posting:
-    def __init__(self, line_no: int, position: int):
+    def __init__(self, line_no: int, position: int, original_token: str):
         self.line_no = line_no
         self.position = position
+        self.original_token = original_token
 
     def __repr__(self) -> str:
         return f"{self.line_no}:{self.position}"
@@ -67,15 +86,15 @@ class Index:
 
         for sonnet in sonnets:
             for token, pos in self.tokenize(sonnet.title):
-                token = token.lower().strip(string.punctuation)
-                if token:
-                    self._add_token(sonnet.id, token, None, pos)
+                stem = normalized_stem_token(token)
+                if stem:
+                    self._add_token(sonnet.id, stem, None, pos, token)
 
             for line_no, line in enumerate(sonnet.lines, start=1):
                 for token, pos in self.tokenize(line):
-                    token = token.lower().strip(string.punctuation)
-                    if token:
-                        self._add_token(sonnet.id, token, line_no, pos)
+                    stem = normalized_stem_token(token)
+                    if stem:
+                        self._add_token(sonnet.id, stem, line_no, pos, token)
                 # ToDo 2: Implement logic of adding tokens to the index. Use the pre-defined methods tokenize and
             #  _add_token to do so. Index the title and the lines of the sonnet.
 
@@ -103,7 +122,7 @@ class Index:
 
         return tokens
 
-    def _add_token(self, doc_id: int, token: str, line_no: int | None, position: int):
+    def _add_token(self, doc_id: int, stem: str, line_no: int | None, position: int, token: str):
         """
         Add a single token occurrence to the inverted index.
 
@@ -137,16 +156,16 @@ class Index:
             position: The 0-based starting character index of the token within the
                 title (if `line_no is None`) or within the line (otherwise).
         """
-        if token not in self.dictionary:
-            self.dictionary[token] = {}
+        if stem not in self.dictionary:
+            self.dictionary[stem] = {}
 
-        postings_list = self.dictionary[token]
+        postings = self.dictionary[stem]
+        if doc_id not in postings:
+            postings[doc_id] = []
 
-        if doc_id not in postings_list:
-            postings_list[doc_id] = []
-        postings_list[doc_id].append(Posting(line_no, position))
+        postings[doc_id].append(Posting(line_no, position, token))
 
-    def search_for(self, token: str) -> dict[int, SearchResult]:
+    def search_for(self, query_token: str) -> dict[int, SearchResult]:
         """
         Search the index for a single token and return all matching documents.
 
@@ -189,29 +208,32 @@ class Index:
         """
         # The dictionary results will have the id of the sonnet as its key and SearchResult as its value. You can
         # see its Type hint in the signature of the method.
+        stem = normalized_stem_token(query_token)
+        if stem not in self.dictionary:
+            return {}
         results = {}
 
-        if token in self.dictionary:
-            postings_list = self.dictionary[token]
-            for doc_id, postings in postings_list.items():
-                for posting in postings:
-                    sonnet = self.sonnets[doc_id]
+        for doc_id, postings in self.dictionary[stem].items():
+            sonnet = self.sonnets[doc_id]
 
                     # ToDo 3: Based on the posting create the corresponding SearchResult instance
-                    if posting.line_no is None:
-                        span = (posting.position, posting.position + len(token))
-                        result = SearchResult(sonnet.title, [span], [], 1)
-                    else:
-                        line_text = sonnet.lines[posting.line_no - 1]
-                        span = (posting.position, posting.position + len(token))
-                        lm = LineMatch(posting.line_no, line_text, [span])
-                        result = SearchResult(sonnet.title, [], [lm], 1)
-                    # At this point result contains the SearchResult corresponding to the posting - ready to be added
-                    # to the results dictionary.
-                    if doc_id not in results:
-                        results[doc_id] = result
-                    else:
-                        results[doc_id] = results[doc_id].combine_with(result)
+            partial_results = []
+            for posting in postings:
+                # Build SearchResult for each posting
+                if posting.line_no is None:
+                    # title highlight
+                    span = (posting.position, posting.position + len(posting.original_token))
+                    sr = SearchResult(sonnet.title, [span], [], 1)
+                else:
+                    line_text = sonnet.lines[posting.line_no - 1]
+                    span = (posting.position, posting.position + len(posting.original_token))
+                    lm = LineMatch(posting.line_no, line_text, [span])
+                    sr = SearchResult(sonnet.title, [], [lm], 1)
+
+                if doc_id not in results:
+                    results[doc_id] = sr
+                else:
+                    results[doc_id] = results[doc_id].combine_with(sr)
 
         return results
 
