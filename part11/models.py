@@ -36,27 +36,33 @@ class Sonnet:
                 spans.append((i, i + len(pattern)))
         return spans
 
-    def search_for(self: Sonnet, query: str) -> SearchResult:
-        title_raw = str(self.title)
-        lines_raw = self.lines
+    def search_for(self: Sonnet, query: str, index: Index) -> SearchResult:
+        stem = normalized_stem_token(query)
+
+        if stem not in index.dictionary:
+            return SearchResult(self.title, [], [], 0)
+
+        postings = index.dictionary[stem].get(self.id, [])
 
         title_spans = []
-        for token, pos in Index.tokenize(title_raw):
-            if normalized_stem_token(token) == query:
-                title_spans.append((pos, pos + len(token)))
+        line_matches_dict = {}  # line_no -> spans
 
-        line_matches = []
-        for idx, line_raw in enumerate(lines_raw, start=1):  # 1-based line numbers
-            spans = []
-            for token, pos in Index.tokenize(line_raw):
-                if normalized_stem_token(token) == query:
-                    spans.append((pos, pos + len(token)))
+        for posting in postings:
+            span = (posting.position, posting.position + len(posting.original_token))
 
-            if spans:
-                line_matches.append(LineMatch(idx, line_raw, spans))
+            if posting.line_no is None:
+                title_spans.append(span)
+            else:
+                line_matches_dict.setdefault(posting.line_no, []).append(span)
+
+        line_matches = [
+            LineMatch(ln, self.lines[ln - 1], spans)
+            for ln, spans in sorted(line_matches_dict.items())
+        ]
+
         total = len(title_spans) + sum(len(lm.spans) for lm in line_matches)
 
-        return SearchResult(title_raw, title_spans, line_matches, total)
+        return SearchResult(self.title, title_spans, line_matches, total)
 
 
 class LineMatch:
@@ -165,75 +171,37 @@ class Index:
 
         postings[doc_id].append(Posting(line_no, position, token))
 
-    def search_for(self, query_token: str) -> dict[int, SearchResult]:
-        """
-        Search the index for a single token and return all matching documents.
-
-        This method looks up the given token in the inverted index
-        (`self.dictionary`). For every occurrence of the token in every indexed
-        document, it constructs a `SearchResult` describing where the token
-        appears and aggregates all occurrences per document.
-
-        Each occurrence (posting) contributes:
-          - a title match if `posting.line_no is None`, or
-          - a line match if the token occurs in one of the sonnet’s lines.
-
-        Multiple occurrences within the same document are merged using
-        `SearchResult.combine_with`, so the final result contains all title
-        spans, line matches, and an accumulated score for that document.
-
-        Args:
-            token: The token to search for. The token must match exactly how it
-                was indexed (no normalization is performed).
-
-        Returns:
-            A dictionary mapping sonnet IDs to `SearchResult` objects.
-
-            For each entry:
-              - the key is the document (sonnet) ID
-              - the value is a `SearchResult` containing:
-                  * the sonnet title,
-                  * all matching spans in the title,
-                  * all matching lines with their spans,
-                  * a score reflecting the total number of occurrences of `token`
-                    in that document
-
-            If the token does not exist in the index, an empty dictionary is
-            returned.
-
-        Notes:
-            - This method performs an exact-token lookup; it does not support
-              stemming, case folding, or partial matches.
-            - Each posting contributes a score of 1 before aggregation.
-        """
+    def search_for(self, token: str) -> dict[int, SearchResult]:
         # The dictionary results will have the id of the sonnet as its key and SearchResult as its value. You can
         # see its Type hint in the signature of the method.
-        stem = normalized_stem_token(query_token)
-        if stem not in self.dictionary:
-            return {}
-        results = {}
+        token = normalized_stem_token(token)
+        results: dict[int, SearchResult] = {}
 
-        for doc_id, postings in self.dictionary[stem].items():
-            sonnet = self.sonnets[doc_id]
+        if not token:
+            return results
 
-                    # ToDo 3: Based on the posting create the corresponding SearchResult instance
-            partial_results = []
-            for posting in postings:
-                # Build SearchResult for each posting
-                if posting.line_no is None:
-                    # title highlight
-                    span = (posting.position, posting.position + len(posting.original_token))
-                    sr = SearchResult(sonnet.title, [span], [], 1)
-                else:
-                    line_text = sonnet.lines[posting.line_no - 1]
-                    span = (posting.position, posting.position + len(posting.original_token))
-                    lm = LineMatch(posting.line_no, line_text, [span])
-                    sr = SearchResult(sonnet.title, [], [lm], 1)
+        if token in self.dictionary:
+            postings_list = self.dictionary[token]
+            for doc_id, postings in postings_list.items():
+                sonnet = self.sonnets[doc_id]
 
-                if doc_id not in results:
-                    results[doc_id] = sr
-                else:
-                    results[doc_id] = results[doc_id].combine_with(sr)
+                        # ToDo 3: Based on the posting create the corresponding SearchResult instance
+                for posting in postings:
+                    # Build SearchResult for each posting
+                    if posting.line_no is None:
+                        # title highlight
+                        span = (posting.position, posting.position + len(posting.original_token))
+                        sr = SearchResult(sonnet.title, [span], [], 1)
+                    else:
+                        line_text = sonnet.lines[posting.line_no - 1]
+                        span = (posting.position, posting.position + len(posting.original_token))
+                        lm = LineMatch(posting.line_no, line_text, [span])
+                        sr = SearchResult(sonnet.title, [], [lm], 1)
+
+                    if doc_id not in results:
+                        results[doc_id] = sr
+                    else:
+                        results[doc_id] = results[doc_id].combine_with(sr)
 
         return results
 
@@ -244,56 +212,15 @@ class Searcher:
 
 
     def search(self, query: str, search_mode: str) -> List[SearchResult]:
-        """
-        Search sonnets for a multi-word query and return combined matches.
 
-        The query is split on whitespace into individual words. Each word is looked
-        up independently via `Index.search_for`, producing a dictionary:
-
-            {sonnet_id: SearchResult}
-
-        These per-word results are then merged across words according to the chosen
-        `search_mode`:
-
-          - "AND": Only sonnets that appear in the results of *every* query word
-            are kept. For those sonnets, the corresponding `SearchResult` objects
-            are merged using `SearchResult.combine_with`.
-
-          - "OR": Sonnets that appear in the results of *any* query word are kept.
-            If a sonnet matches multiple words, their `SearchResult` objects are
-            merged using `SearchResult.combine_with`. If it matches only some
-            words, its existing `SearchResult` is included as-is.
-
-        In both modes, whenever a sonnet is present in both the accumulated results
-        and the current word’s results, the two `SearchResult` objects are always
-        merged so that all spans/line matches and scores are aggregated.
-
-        Args:
-            query: A whitespace-separated query string. Each word is searched as an
-                exact token (no normalization is performed).
-            search_mode: Either "AND" or "OR", controlling whether documents must
-                match all query words ("AND") or any query word ("OR").
-
-        Returns:
-            A list of combined `SearchResult` objects, one per matching sonnet,
-            sorted alphabetically by `SearchResult.title`.
-
-        Notes:
-            - This is an exact-token search: case differences, punctuation, and
-              other normalization concerns must be handled before calling `search`
-              if desired.
-            - The final score in each `SearchResult` depends on how
-              `SearchResult.combine_with` aggregates scores across occurrences and
-              across query words.
-        """
         words = query.split()
 
         combined_results = {}
 
         for word in words:
             # Searching for the word in all sonnets
-            word = word.lower()
-            results = self.index.search_for(word)
+            token = normalized_stem_token(word)
+            results = self.index.search_for(token)
 
             # ToDo 4: Combine the search results from the search_for method of the index. From ToDo 2 you know
             #         that results is a dictionary with the key-value pairs of int-SearchResult, where the key is the

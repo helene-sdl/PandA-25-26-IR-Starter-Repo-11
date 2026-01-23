@@ -1,5 +1,5 @@
 {
     "highlight": true,
-    "search_mode": "AND",
+    "search_mode": "OR",
     "hl_mode": "GREEN"
 }
