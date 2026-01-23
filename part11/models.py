@@ -129,39 +129,6 @@ class Index:
         return tokens
 
     def _add_token(self, doc_id: int, stem: str, line_no: int | None, position: int, token: str):
-        """
-        Add a single token occurrence to the inverted index.
-
-        This method updates `self.dictionary`, which maps each token to a postings
-        list. A postings list is a mapping from document ID to a list of `Posting`
-        objects describing every occurrence of that token in the document.
-
-        The resulting structure has the form:
-            self.dictionary[token][doc_id] -> [Posting(line_no, position), ...]
-
-        Where:
-          - `line_no` identifies *where* in the document the token appears:
-              * `None` means the token came from the title.
-              * `0..n-1` means the token came from the corresponding line in
-                `sonnet.lines`.
-          - `position` is the 0-based character offset of the token within the
-            corresponding text:
-              * If `line_no is None`, it is the character offset within the full
-                title string (including any prefix before ": "), as calculated by
-                the caller.
-              * Otherwise, it is the character offset within that line string.
-
-        This method does not normalize tokens (e.g., lowercasing, punctuation
-        stripping) and does not deduplicate occurrences; every call appends a new
-        `Posting`.
-
-        Args:
-            doc_id: The ID of the document (sonnet) the token belongs to.
-            token: The token text to index (as produced by `tokenize`).
-            line_no: The line number within the document, or `None` for title tokens.
-            position: The 0-based starting character index of the token within the
-                title (if `line_no is None`) or within the line (otherwise).
-        """
         if stem not in self.dictionary:
             self.dictionary[stem] = {}
 
@@ -172,8 +139,6 @@ class Index:
         postings[doc_id].append(Posting(line_no, position, token))
 
     def search_for(self, token: str) -> dict[int, SearchResult]:
-        # The dictionary results will have the id of the sonnet as its key and SearchResult as its value. You can
-        # see its Type hint in the signature of the method.
         token = normalized_stem_token(token)
         results: dict[int, SearchResult] = {}
 
